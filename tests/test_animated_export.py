@@ -76,3 +76,21 @@ def test_vertical_strokes_are_slider_gated_and_uniquely_named():
     assert len(vertical_lines) == 2
     for line in vertical_lines:
         assert "x_{1}\\ge" in line
+
+
+def test_desmos_export_includes_whole_stroke_shape_guess():
+    from curve_guesser.preview import build_desmos_export
+
+    theta = np.linspace(0, 2 * np.pi, 100)
+    x = 3 + 2 * np.cos(theta)
+    y = -1 + 2 * np.sin(theta)
+    fits = [fit_stroke_pieces(x, y, num_pieces=8)]
+
+    text = build_desmos_export(fits, [(x, y)])
+
+    assert "WHOLE-STROKE SHAPE GUESSES" in text
+    assert "# Stroke 1: circle (excellent match" in text
+    assert "(x - 3.0000)^2 + (y + 1.0000)^2 = 2.0000^2" in text
+
+    fallback_text = build_desmos_export(fits)
+    assert "# Stroke 1:" in fallback_text

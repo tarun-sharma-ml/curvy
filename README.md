@@ -25,9 +25,10 @@ interactive board. Curve Guesser gives you two things back:
 5. A **live preview** window opens with a "Pieces per stroke" slider.
    Drag it to trade off detail vs. equation count, color-coded by which
    function type won each piece (blue=line, green=parabola, red=arc).
-6. Click **Confirm & Export**. The final piecewise equations print to
-   the console and save to `desmos_equations.txt`, including a second,
-   animated "pen drawing" version driven by a shared Desmos slider.
+6. Click **Confirm & Export**. Whole-stroke canonical guesses and the
+   final piecewise equations print to the console and save to
+   `desmos_equations.txt`, including a second, animated "pen drawing"
+   version driven by a shared Desmos slider.
 
 ## Installation
 
@@ -55,11 +56,28 @@ or, if installed as a package:
 curve-guesser
 ```
 
-**Controls while drawing:**
-- Left-click and drag: draw a stroke
-- **Eraser** button or `e`: toggle eraser mode; drag to erase
-- `c`: clear the board
+**Drawing tools** (left-hand palette, or press the key):
+
+| Tool | Key | How it works |
+|---|---|---|
+| Pen | `p` | Freehand. After each stroke the board shows which canonical shape it looks like, with the equation filled in |
+| Line | `l` | Drag. Hold **Shift** to lock to 15° angles |
+| Rectangle | `r` | Drag corner to corner. **Shift** = square, **Alt** = from centre |
+| Circle | `o` | Drag from the centre outwards |
+| Ellipse | `v` | Drag the bounding box. **Shift** = circle, **Alt** = from centre |
+| Polygon | `g` | Click points; double-click or click the first point to close, right-click to finish open, `Esc` to cancel |
+| Move | `m` | Drag any drawn object to reposition it; `Delete` removes it |
+| Eraser | `e` | Drag over strokes to rub them out (press again to return to your previous tool) |
+
+**Other controls:**
+- **Undo / Redo**: buttons, `Ctrl+Z` / `u`, and `Ctrl+Y`
+- **Snap** button or `s`: snap shape corners and moves to the grid
+- `c`: clear the board (undoable)
 - `Enter` or **Fit Curve**: move to shape guesses + the piece-count preview
+
+Shapes made with the tools are ordinary strokes, so they flow straight into
+the fitting and Desmos export. Rectangles and polygons are added one stroke
+per side so each side fits as an exact straight line.
 
 **In the preview window:**
 - Drag **Pieces per stroke** to trade off detail vs. equation count
@@ -85,7 +103,8 @@ reconstruction.
 
 ## Using the piecewise output in Desmos
 
-`desmos_equations.txt` contains named, restricted-domain equations like:
+`desmos_equations.txt` first lists optional whole-stroke shape guesses,
+then contains named, restricted-domain equations like:
 
 ```
 f_{1a}(x)=\left\{x\le0.5472:...,...\right\}\left\{0.0000\le x\le0.9540\right\}
@@ -104,13 +123,16 @@ stroke, left to right.
 curve-guesser/
 ├── curve_guesser/
 │   ├── __init__.py
-│   ├── board.py      # interactive drawing board + eraser
+│   ├── board.py      # interactive drawing board + tool palette
+│   ├── tools.py       # geometry behind the shape tools
 │   ├── shapes.py      # whole-stroke canonical shape guesser
 │   ├── pieces.py       # split a stroke into pieces, fit line/parabola/arc
 │   ├── preview.py      # live slider preview + Desmos export (static + animated)
 │   └── cli.py            # entry point
 ├── tests/
 │   ├── test_board.py
+│   ├── test_board_tools.py
+│   ├── test_tools.py
 │   ├── test_pieces.py
 │   ├── test_shapes.py
 │   └── test_animated_export.py

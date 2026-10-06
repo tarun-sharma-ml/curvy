@@ -40,7 +40,7 @@ def main():
         print("Preview closed without confirming -- nothing exported.")
         return
 
-    export_text = build_desmos_export(final_fits)
+    export_text = build_desmos_export(final_fits, board.strokes)
     out_path = os.path.join(os.getcwd(), "desmos_equations.txt")
     with open(out_path, "w") as f:
         f.write(export_text)

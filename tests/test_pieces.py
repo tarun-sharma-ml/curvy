@@ -103,6 +103,18 @@ def test_to_desmos_string_circle_format():
     assert "\\sqrt" in s
 
 
+def test_to_desmos_string_circle_uses_correct_center_signs():
+    piece = {
+        "kind": "circle",
+        "orientation": "x",
+        "params": (3.0, -2.0, 5.0, 1.0),
+        "domain": (0.0, 5.0),
+    }
+    s = to_desmos_string(piece)
+    assert "(x-3.0000)^2" in s
+    assert "-2.0000+" in s
+
+
 def test_to_desmos_string_negative_center_no_double_sign():
     theta = np.linspace(np.pi, 3 * np.pi / 2, 30)
     x = 3 * np.cos(theta) - 5

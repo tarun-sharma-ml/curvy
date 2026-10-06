@@ -200,10 +200,11 @@ def guess_shape(x, y):
 
     candidates = []
 
-    try:
-        candidates.append(_fit_line(x, y))
-    except Exception:
-        pass
+    if len(x) >= 2 and len(y) >= 2:
+        try:
+            candidates.append(_fit_line(x, y))
+        except Exception:
+            pass
 
     if len(x) >= 3:
         try:
@@ -227,6 +228,7 @@ def guess_shape(x, y):
             "error": float("inf"),
             "equation": "(not enough points to guess a shape)",
             "params": {},
+            "confidence": "poor match -- doesn't resemble a simple shape well",
         }
 
     # All error metrics are normalized residuals on a comparable scale

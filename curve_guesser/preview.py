@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 
 from .pieces import fit_stroke_pieces, evaluate_piece, group_pieces, group_to_desmos, to_desmos_animated, to_desmos_string
+from .shapes import guess_shape
 
 KIND_COLORS = {"line": "tab:blue", "quadratic": "tab:green", "circle": "tab:red"}
 
@@ -90,16 +91,39 @@ class Previewer:
         return self.final_fits
 
 
-def build_desmos_export(final_fits):
+def build_desmos_export(final_fits, strokes=None):
     lines = []
     lines.append("=" * 70)
     lines.append("DESMOS EQUATIONS")
     lines.append("=" * 70)
     lines.append(
-        "Paste each line below into Desmos as its own expression -- named\n"
-        "functions like f_{1a}(x)=... are plotted automatically, no extra\n"
-        "'y=f(x)' line needed. Together they trace your drawing.\n"
+        "Whole-stroke guesses are optional canonical equations. The\n"
+        "restricted piecewise equations below trace your drawing; paste\n"
+        "each into Desmos as its own expression.\n"
     )
+    if strokes is None:
+        strokes = []
+        for piece_list in final_fits:
+            sampled = [evaluate_piece(piece, n=40) for piece in piece_list]
+            if sampled:
+                strokes.append((
+                    np.concatenate([x for x, _y in sampled]),
+                    np.concatenate([y for _x, y in sampled]),
+                ))
+
+    lines.append("-" * 70)
+    lines.append("WHOLE-STROKE SHAPE GUESSES (optional; canonical equations)")
+    lines.append("-" * 70)
+    for s_idx, (x, y) in enumerate(strokes, start=1):
+        guess = guess_shape(x, y)
+        lines.append(
+            f"# Stroke {s_idx}: {guess['kind']} ({guess['confidence']}, "
+            f"error={guess['error']:.4f})"
+        )
+        if guess["kind"] != "unknown":
+            lines.append(guess["equation"])
+    lines.append("")
+
     total_equations = 0
     total_pieces = 0
     letters = "abcdefghijklmnopqrstuvwxyz"

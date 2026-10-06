@@ -294,7 +294,7 @@ def _piece_rhs(piece):
         center = h if orientation == "x" else k
         other_center = k if orientation == "x" else h
         sign_str = "+" if sign >= 0 else "-"
-        center_str = f"-{abs(center):.4f}" if center < 0 else f"+{center:.4f}"
+        center_str = f"+{abs(center):.4f}" if center < 0 else f"-{center:.4f}"
         return (
             f"{other_center:.4f}{sign_str}"
             f"\\sqrt{{{r:.4f}^2-({var}{center_str})^2}}"

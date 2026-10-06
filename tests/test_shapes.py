@@ -93,6 +93,11 @@ def test_random_scribble_gets_low_confidence():
 def test_too_few_points_returns_unknown_or_line_gracefully():
     g = guess_shape([0, 1], [0, 1])
     assert g["kind"] in ("line", "unknown")
+    assert "confidence" in g
+
+    single_point = guess_shape([0], [0])
+    assert single_point["kind"] == "unknown"
+    assert "confidence" in single_point
 
 
 def test_confidence_field_present_on_every_result():
