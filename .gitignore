@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+curvy/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+*.png
+*.jpg
+desmos_equations.txt
