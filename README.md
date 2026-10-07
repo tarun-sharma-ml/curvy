@@ -82,12 +82,16 @@ reveal exports are available through the Python application.
 **Other controls:**
 - **Undo / Redo**: buttons, `Ctrl+Z` / `u`, and `Ctrl+Y`
 - **Snap** button or `s`: snap shape corners and moves to the grid
+- **Mirror left/right**: reflect new drawings across the vertical axis; toggle with `x`
+- **Mirror top/bottom**: reflect new drawings across the horizontal axis; toggle with `y`
 - `c`: clear the board (undoable)
 - `Enter` or **Fit Curve**: move to shape guesses + the piece-count preview
 
 Shapes made with the tools are ordinary strokes, so they flow straight into
 the fitting and Desmos export. Rectangles and polygons are added one stroke
-per side so each side fits as an exact straight line.
+per side so each side fits as an exact straight line. Enabled mirror options
+apply to new pen strokes and built shapes; mirrored parts move and erase with
+their original object.
 
 **In the preview window:**
 - Each stroke starts with the fewest pieces that reach the automatic fit

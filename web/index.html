@@ -48,6 +48,10 @@
         <button id="snap" aria-pressed="false">Snap: off</button>
         <button id="fit" class="primary">Fit drawing</button>
       </div>
+      <div class="toolbar" role="group" aria-label="Mirror drawing options">
+        <button id="mirror-x" aria-pressed="false" title="Mirror strokes left and right across the vertical axis">Mirror left/right: off</button>
+        <button id="mirror-y" aria-pressed="false" title="Mirror strokes top and bottom across the horizontal axis">Mirror top/bottom: off</button>
+      </div>
       <div class="toolbar tools" role="toolbar" aria-label="Drawing tools">
         <button data-tool="pen" aria-pressed="true">Pen (P)</button>
         <button data-tool="line" aria-pressed="false">Line (L)</button>
@@ -82,6 +86,7 @@
   const ctx = canvas.getContext("2d");
   const strokes = [];
   const objectIds = [];
+  const objectTransforms = [];
   const autoCounts = [];
   const pieceCounts = [];
   const undoStack = [];
@@ -103,6 +108,8 @@
   let activeTool = "pen";
   let previousTool = "pen";
   let snap = false;
+  let mirrorLeftRight = false;
+  let mirrorTopBottom = false;
   let nextObjectId = 1;
   let polygonPoints = [];
   let polygonCursor = null;
@@ -127,11 +134,12 @@
     return source.map(points=>points.map(point=>[...point]));
   }
   function snapshot() {
-    return {strokes:copyStrokes(), objectIds:[...objectIds]};
+    return {strokes:copyStrokes(), objectIds:[...objectIds], transforms:objectTransforms.map(transform=>({...transform}))};
   }
   function restore(state) {
     strokes.splice(0,strokes.length,...copyStrokes(state.strokes));
     objectIds.splice(0,objectIds.length,...state.objectIds);
+    objectTransforms.splice(0,objectTransforms.length,...state.transforms.map(transform=>({...transform})));
     selectedObjectId=null;
   }
   function updateHistoryButtons() {
@@ -157,12 +165,55 @@
     if(!newStrokes.length)return;
     saveUndo();
     const objectId=nextObjectId++;
-    newStrokes.forEach(points=>{
+    mirrorCopies(newStrokes).forEach(({points,sx,sy})=>{
       if(points.length<2)return;
       strokes.push(points.map(point=>[...point]));
       objectIds.push(objectId);
+      objectTransforms.push({sx,sy});
     });
     invalidateFit();
+    render();
+  }
+  function sameStroke(a,b) {
+    if(a.length!==b.length)return false;
+    const matches=reverse=>a.every((point,i)=>{
+      const target=b[reverse?b.length-1-i:i];
+      return Math.hypot(point[0]-target[0],point[1]-target[1])<1e-9;
+    });
+    return matches(false)||matches(true);
+  }
+  function mirrorCopies(paths) {
+    const copies=[];
+    const xSigns=mirrorLeftRight?[1,-1]:[1];
+    const ySigns=mirrorTopBottom?[1,-1]:[1];
+    for(const sx of xSigns)for(const sy of ySigns)for(const path of paths) {
+      const points=path.map(([x,y])=>[x*sx,y*sy]);
+      if(!copies.some(copy=>sameStroke(copy.points,points)))copies.push({points,sx,sy});
+    }
+    return copies;
+  }
+  function mirroredPoints(p) {
+    const copies=[];
+    const xSigns=mirrorLeftRight?[1,-1]:[1];
+    const ySigns=mirrorTopBottom?[1,-1]:[1];
+    for(const sx of xSigns)for(const sy of ySigns) {
+      const point=[p[0]*sx,p[1]*sy];
+      if(!copies.some(copy=>Math.hypot(copy[0]-point[0],copy[1]-point[1])<1e-9))copies.push(point);
+    }
+    return copies;
+  }
+  function drawMirrored(paths,color,width,v,dashed=false) {
+    mirrorCopies(paths).forEach(({points})=>drawPath(points,color,width,v,dashed));
+  }
+  function toggleMirror(axis) {
+    if(axis==="x")mirrorLeftRight=!mirrorLeftRight;
+    else mirrorTopBottom=!mirrorTopBottom;
+    const button=document.querySelector(axis==="x"?"#mirror-x":"#mirror-y");
+    const enabled=axis==="x"?mirrorLeftRight:mirrorTopBottom;
+    const label=axis==="x"?"Mirror left/right":"Mirror top/bottom";
+    button.textContent=`${label}: ${enabled?"on":"off"}`;
+    button.classList.toggle("active",enabled);
+    button.setAttribute("aria-pressed",String(enabled));
     render();
   }
   function setTool(tool) {
@@ -207,7 +258,7 @@
   function clearBoard() {
     if(!strokes.length&&!polygonPoints.length)return;
     saveUndo();
-    strokes.length=0; objectIds.length=0; polygonPoints=[];
+    strokes.length=0; objectIds.length=0; objectTransforms.length=0; polygonPoints=[];
     selectedObjectId=null;
     invalidateFit(); render();
   }
@@ -215,7 +266,7 @@
     if(selectedObjectId===null)return;
     const before=snapshot();
     for(let i=objectIds.length-1;i>=0;i--)if(objectIds[i]===selectedObjectId){
-      objectIds.splice(i,1); strokes.splice(i,1);
+      objectIds.splice(i,1); objectTransforms.splice(i,1); strokes.splice(i,1);
     }
     selectedObjectId=null;
     saveUndo(before); invalidateFit(); render();
@@ -258,9 +309,9 @@
       const selected=objectIds[index]===selectedObjectId;
       drawPath(stroke,selected?"#d64a24":"#4f6fbd",selected?3.5:2.5,v);
     });
-    if(drawing)drawPath(drawing,"#2457d6",2.5,v);
-    if(shapeDrag?.preview)drawPath(shapeDrag.preview,"#d64a24",2,v,true);
-    if(polygonPoints.length)drawPath([...polygonPoints,...(polygonCursor?[polygonCursor]:[])],"#d64a24",2,v,true);
+    if(drawing)drawMirrored([drawing],"#2457d6",2.5,v);
+    if(shapeDrag?.preview)drawMirrored(shapeDrag.preview,"#d64a24",2,v,true);
+    if(polygonPoints.length)drawMirrored([[...polygonPoints,...(polygonCursor?[polygonCursor]:[])]],"#d64a24",2,v,true);
     if(eraserPosition&&activeTool==="erase") {
       const center=pixel(eraserPosition,v);
       ctx.strokeStyle="#d64a24";ctx.lineWidth=1.5;ctx.beginPath();
@@ -593,7 +644,10 @@
     const sx=dx-moveDrag.last[0],sy=dy-moveDrag.last[1];
     if(!sx&&!sy)return;
     strokes.forEach((stroke,index)=>{
-      if(objectIds[index]===selectedObjectId)strokes[index]=stroke.map(([x,y])=>[x+sx,y+sy]);
+      if(objectIds[index]===selectedObjectId) {
+        const transform=objectTransforms[index];
+        strokes[index]=stroke.map(([x,y])=>[x+sx*transform.sx,y+sy*transform.sy]);
+      }
     });
     moveDrag.last=[dx,dy];moveDrag.moved=true;
     render();
@@ -612,13 +666,20 @@
       }
       if(remaining.length>=2)chunks.push([...remaining]);
       if(strokeChanged) {
-        if(!chunks.length){strokes.splice(i,1);objectIds.splice(i,1);}
+        if(!chunks.length){strokes.splice(i,1);objectIds.splice(i,1);objectTransforms.splice(i,1);}
         else {
           const id=objectIds[i];
+          const transform=objectTransforms[i];
           strokes.splice(i,1,...chunks);objectIds.splice(i,1,...chunks.map(()=>id));
+          objectTransforms.splice(i,1,...chunks.map(()=>({...transform})));
         }
       }
     }
+    return changed;
+  }
+  function eraseMirroredAt(p) {
+    let changed=false;
+    mirroredPoints(p).forEach(point=>{changed=eraseAt(point)||changed;});
     return changed;
   }
   let eraseDrag=null;
@@ -640,7 +701,7 @@
     else if(activeTool==="erase") {
       eraseDrag={before:snapshot(),changed:false};
       eraserPosition=world(event);
-      eraseDrag.changed=eraseAt(eraserPosition);
+      eraseDrag.changed=eraseMirroredAt(eraserPosition);
     }
     render();
   });
@@ -650,12 +711,12 @@
       const last=drawing[drawing.length-1];
       if(Math.hypot(p[0]-last[0],p[1]-last[1])>.025)drawing.push(p);
     } else if(shapeDrag) {
-      shapeDrag.preview=(buildShape(activeTool,shapeDrag.from,p,event)||[]).flat();
+      shapeDrag.preview=buildShape(activeTool,shapeDrag.from,p,event)||[];
     } else if(activeTool==="polygon"&&polygonPoints.length)polygonCursor=p;
     else if(activeTool==="move")moveObject(world(event));
     else if(activeTool==="erase") {
       eraserPosition=world(event);
-      if(eraseDrag)eraseDrag.changed=eraseAt(eraserPosition)||eraseDrag.changed;
+      if(eraseDrag)eraseDrag.changed=eraseMirroredAt(eraserPosition)||eraseDrag.changed;
     }
     render();
   });
@@ -685,6 +746,8 @@
   redoButton.addEventListener("click",redo);
   document.querySelector("#clear").addEventListener("click",clearBoard);
   document.querySelector("#snap").addEventListener("click",()=>setSnap());
+  document.querySelector("#mirror-x").addEventListener("click",()=>toggleMirror("x"));
+  document.querySelector("#mirror-y").addEventListener("click",()=>toggleMirror("y"));
   document.querySelectorAll("[data-tool]").forEach(button=>button.addEventListener("click",()=>setTool(button.dataset.tool)));
   window.addEventListener("keydown",event=>{
     if(event.target.matches("input, textarea, select"))return;
@@ -701,6 +764,8 @@
     if(key==="c"){clearBoard();return;}
     if(key==="u"){undo();return;}
     if(key==="s"){setSnap();return;}
+    if(key==="x"){toggleMirror("x");return;}
+    if(key==="y"){toggleMirror("y");return;}
     if(key==="e"){setTool("erase");return;}
     const shortcuts={p:"pen",l:"line",r:"rect",o:"circle",v:"ellipse",g:"polygon",m:"move"};
     if(shortcuts[key])setTool(shortcuts[key]);
