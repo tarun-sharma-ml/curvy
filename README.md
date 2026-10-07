@@ -60,10 +60,11 @@ curve-guesser
 
 Open [`web/index.html`](./web/index.html) directly in a modern browser.
 Draw one or more strokes, click **Fit drawing**, select a stroke to adjust
-its piece count, then download the Desmos expressions. The browser version
-is self-contained and does not need a server, package install, or network
-connection. It exports static equations; animated reveal exports are
-available through the Python application.
+its piece count, then click **Copy equations** to copy the equations to the
+clipboard. The copy excludes comments, headings, and explanatory text. The
+browser version is self-contained and does not need a server, package
+install, or network connection. It supports static equations; animated
+reveal exports are available through the Python application.
 
 **Drawing tools** (left-hand palette, or press the key):
 

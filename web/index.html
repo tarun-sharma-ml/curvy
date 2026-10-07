@@ -20,6 +20,8 @@
     button { cursor: pointer; }
     button.primary { background: #2457d6; border-color: #2457d6; color: white; }
     button.active { background: #dce8ff; border-color: #5781ef; }
+    #copy { transition: opacity 250ms ease, transform 250ms ease; }
+    #copy.copy-feedback { opacity: .55; transform: scale(.97); }
     button:disabled { opacity: .5; cursor: default; }
     .controls { margin: 12px 0; }
     .controls label { display: flex; align-items: center; gap: 8px; }
@@ -29,12 +31,14 @@
     .guess strong { text-transform: capitalize; }
     textarea { width: 100%; min-height: 235px; resize: vertical; font: 12px/1.5 ui-monospace, Consolas, monospace; border: 1px solid #dce3ee; border-radius: 8px; padding: 10px; }
     .hint { font-size: .88rem; color: #65748a; margin: 8px 0 0; }
+    .copy-toast { position: fixed; right: 24px; bottom: 24px; z-index: 10; margin: 0; padding: 10px 14px; border-radius: 8px; background: #172033; color: white; box-shadow: 0 4px 16px #18284833; opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity 250ms ease, transform 250ms ease; }
+    .copy-toast.show { opacity: 1; transform: translateY(0); }
     @media (max-width: 780px) { body { padding: 12px; } .layout { grid-template-columns: 1fr; } canvas { height: 55vh; min-height: 320px; } }
   </style>
 </head>
 <body>
   <h1>Curve Guesser</h1>
-  <p>Draw a stroke, inspect its whole-shape guess, then tune the automatic piece count and export Desmos equations.</p>
+  <p>Draw a stroke, inspect its whole-shape guess, then tune the automatic piece count and copy Desmos equations.</p>
   <div class="layout">
     <section class="panel">
       <div class="toolbar">
@@ -64,9 +68,10 @@
     </section>
     <section class="panel">
       <div class="toolbar">
-        <button id="export" class="primary" disabled>Download Desmos equations</button>
+        <button id="copy" class="primary" disabled>Copy equations</button>
       </div>
       <textarea id="equations" aria-label="Generated Desmos equations" readonly placeholder="Draw a shape, then click Fit drawing."></textarea>
+      <p id="copy-status" class="copy-toast" role="status" aria-live="polite"></p>
       <p class="hint">Blue shows your strokes; green shows the fitted piecewise approximation. Shape guesses are optional canonical equations.</p>
     </section>
   </div>
@@ -105,11 +110,15 @@
   let moveDrag = null;
   let selectedObjectId = null;
   let eraserPosition = null;
+  let equationsToCopy = "";
   const strokeSelect = document.querySelector("#stroke");
   const pieceSlider = document.querySelector("#pieces");
   const pieceOutput = document.querySelector("#piece-count");
   const equationOutput = document.querySelector("#equations");
-  const exportButton = document.querySelector("#export");
+  const copyButton = document.querySelector("#copy");
+  const copyStatus = document.querySelector("#copy-status");
+  let copyButtonTimer;
+  let copyToastTimer;
   const undoButton = document.querySelector("#undo");
   const redoButton = document.querySelector("#redo");
   const toolHint = document.querySelector("#tool-hint");
@@ -137,7 +146,7 @@
   }
   function invalidateFit() {
     fitted=false; fits=[]; autoCounts.length=0; pieceCounts.length=0;
-    exportButton.disabled=true;
+    copyButton.disabled=true;
     document.querySelector("#guesses").replaceChildren();
     equationOutput.value="";
     strokeSelect.replaceChildren();
@@ -456,7 +465,7 @@
     pieceCounts.splice(0,pieceCounts.length,...autoCounts);
     pieceSlider.value=pieceCounts[0]; pieceOutput.value=pieceCounts[0];
     pieceSlider.disabled=false;
-    fitted=true; exportButton.disabled=false;
+    fitted=true; copyButton.disabled=false;
     updateGuessPanel(); writeEquations(); render();
   }
   function onSelection() {
@@ -467,7 +476,12 @@
   function quote(value) { return Number(value).toFixed(4); }
   function writeEquations() {
     const lines=["DESMOS EQUATIONS","Optional whole-stroke guesses:"];
-    strokes.forEach((stroke,i)=>{const g=guessShape(stroke);lines.push(`# Stroke ${i+1}: ${g.kind}`,g.equation);});
+    const equations=[];
+    strokes.forEach((stroke,i)=>{
+      const g=guessShape(stroke);
+      lines.push(`# Stroke ${i+1}: ${g.kind}`,g.equation);
+      if(g.kind!=="unknown")equations.push(g.equation);
+    });
     lines.push("Piecewise reconstruction (paste each restricted expression separately):");
     fits.forEach((pieces,i)=>pieces.forEach((p,j)=>{
       const variable=p.orientation==="x"?"x":"y",output=p.orientation==="x"?"y":"x";
@@ -487,9 +501,12 @@
       }
       const lo=Math.min(p.from[p.orientation==="x"?0:1],p.to[p.orientation==="x"?0:1]);
       const hi=Math.max(p.from[p.orientation==="x"?0:1],p.to[p.orientation==="x"?0:1]);
-      lines.push(`${output}=${rhs}\\left\\{${quote(lo)}\\le ${variable}\\le${quote(hi)}\\right\\}`);
+      const equation=`${output}=${rhs}\\left\\{${quote(lo)}\\le ${variable}\\le${quote(hi)}\\right\\}`;
+      lines.push(equation);
+      equations.push(equation);
     }));
     equationOutput.value=lines.join("\n");
+    equationsToCopy=equations.join("\n");
   }
   function lineStroke(from,to,count=40) {
     return Array.from({length:count},(_,i)=>{
@@ -695,11 +712,36 @@
     pieceCounts[i]=count; pieceOutput.value=count; fits[i]=fitStroke(strokes[i],count);
     updateGuessPanel();writeEquations();render();
   });
-  exportButton.addEventListener("click",()=>{
-    const blob=new Blob([equationOutput.value],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob);
-    const link=document.createElement("a");link.href=url;link.download="desmos_equations.txt";document.body.append(link);link.click();link.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
-  });
+  async function copyEquations() {
+    if(!equationsToCopy)return;
+    clearTimeout(copyButtonTimer);
+    copyButton.classList.add("copy-feedback");
+    copyButtonTimer=setTimeout(()=>copyButton.classList.remove("copy-feedback"),2000);
+    try {
+      if(navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(equationsToCopy);
+      } else {
+        const temporary=document.createElement("textarea");
+        temporary.value=equationsToCopy;
+        temporary.setAttribute("readonly","");
+        temporary.style.position="fixed";
+        temporary.style.left="-9999px";
+        document.body.append(temporary);
+        temporary.select();
+        const copied=document.execCommand("copy");
+        temporary.remove();
+        if(!copied)throw new Error("Clipboard access is unavailable.");
+      }
+      copyStatus.textContent="Copied to clipboard";
+    } catch(error) {
+      copyStatus.textContent=`Could not copy equations: ${error.message}`;
+      console.error("Could not copy Desmos equations.",error);
+    }
+    clearTimeout(copyToastTimer);
+    copyStatus.classList.add("show");
+    copyToastTimer=setTimeout(()=>copyStatus.classList.remove("show"),2200);
+  }
+  copyButton.addEventListener("click",copyEquations);
   new ResizeObserver(resize).observe(canvas);
   resize();
 })();
