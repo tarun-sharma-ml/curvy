@@ -126,74 +126,78 @@ def _fit_parabola(x, y):
     return {"kind": "parabola", "error": err, "equation": equation, "params": params}
 
 
-def _fit_axis_aligned_ellipse_or_hyperbola(x, y):
-    """Fit the best axis-aligned conic A*x^2 + C*y^2 + D*x + E*y = 1 and
-    classify it as an ellipse or a hyperbola from the signs of A and C.
-    Axis-aligned only (no rotation term) -- matches the simple textbook
-    forms the person asked for.
-    """
-    M = np.column_stack([x**2, y**2, x, y])
-    target = np.ones_like(x)
-    (A, C, D, E), *_ = np.linalg.lstsq(M, target, rcond=None)
-
-    if abs(A) < 1e-9 or abs(C) < 1e-9:
-        raise ValueError("degenerate conic (too close to a parabola/line)")
-
-    h = -D / (2 * A)
-    k = -E / (2 * C)
-    rhs = D**2 / (4 * A) + E**2 / (4 * C) + 1  # +1 because target=1, not 0
-
-    a_sq = rhs / A
-    b_sq = rhs / C
-
+def _fit_rotated_ellipse_or_hyperbola(x, y):
+    """Fit an axis-independent conic and extract its principal axes."""
     scale = max(np.ptp(x), np.ptp(y), 1e-9)
-    pred = A * x**2 + C * y**2 + D * x + E * y
-    err = _normalized_rms(pred - target, 1.0)  # algebraic residual, already ~O(1)
+    mean = np.array([np.mean(x), np.mean(y)])
+    u, v = (x - mean[0]) / scale, (y - mean[1]) / scale
+    M = np.column_stack([u**2, u * v, v**2, u, v])
+    target = np.ones_like(x)
+    A, B, C, D, E = np.linalg.lstsq(M, target, rcond=None)[0]
+    quadratic = np.array([[A, B / 2], [B / 2, C]])
+    linear = np.array([D, E])
+    eigenvalues, eigenvectors = np.linalg.eigh(quadratic)
+    if np.min(np.abs(eigenvalues)) < 1e-10:
+        raise ValueError("no real conic solution")
 
-    h_str = f"x {'-' if h >= 0 else '+'} {abs(h):.4f}"
-    k_str = f"y {'-' if k >= 0 else '+'} {abs(k):.4f}"
-
-    if a_sq > 0 and b_sq > 0:
-        a, b = np.sqrt(a_sq), np.sqrt(b_sq)
-        equation = f"({h_str})^2/{a:.4f}^2 + ({k_str})^2/{b:.4f}^2 = 1"
-        return {
-            "kind": "ellipse",
-            "error": err,
-            "equation": equation,
-            "params": {"h": h, "k": k, "a": a, "b": b},
-        }
-    elif a_sq > 0 and b_sq < 0:
-        a, b = np.sqrt(a_sq), np.sqrt(-b_sq)
-        equation = f"({h_str})^2/{a:.4f}^2 - ({k_str})^2/{b:.4f}^2 = 1"
-        return {
-            "kind": "hyperbola",
-            "error": err,
-            "equation": equation,
-            "params": {"h": h, "k": k, "a": a, "b": b},
-        }
-    elif a_sq < 0 and b_sq > 0:
-        a, b = np.sqrt(-a_sq), np.sqrt(b_sq)
-        equation = f"({k_str})^2/{b:.4f}^2 - ({h_str})^2/{a:.4f}^2 = 1"
-        return {
-            "kind": "hyperbola",
-            "error": err,
-            "equation": equation,
-            "params": {"h": h, "k": k, "a": a, "b": b},
-        }
+    center_uv = -0.5 * np.linalg.solve(quadratic, linear)
+    center_value = float(center_uv @ quadratic @ center_uv + linear @ center_uv - 1)
+    center = mean + scale * center_uv
+    axes = -(center_value * scale**2) / eigenvalues
+    if np.all(axes > 0):
+        kind = "ellipse"
+        a, b = np.sqrt(axes)
+        sign = "+"
+    elif axes[0] * axes[1] < 0:
+        kind = "hyperbola"
+        transverse = int(np.argmax(axes))
+        if axes[transverse] <= 0:
+            raise ValueError("no real conic solution")
+        a = np.sqrt(axes[transverse])
+        b = np.sqrt(abs(axes[1 - transverse]))
+        if transverse == 1:
+            eigenvectors = eigenvectors[:, ::-1]
+        sign = "-"
     else:
         raise ValueError("no real conic solution")
+
+    cos_theta, sin_theta = eigenvectors[:, 0]
+    theta = float(np.arctan2(sin_theta, cos_theta))
+    # Evaluate the normalized conic with its gradient to get an approximate
+    # geometric residual, rather than comparing scale-dependent algebraic residuals.
+    fitted = M @ np.array([A, B, C, D, E])
+    grad_u = 2 * A * u + B * v + D
+    grad_v = B * u + 2 * C * v + E
+    distances = (fitted - 1) / np.maximum(np.hypot(grad_u, grad_v), 1e-12)
+    err = _normalized_rms(distances, max(np.ptp(u), np.ptp(v), 1e-9))
+
+    angle = theta
+    cos_value, sin_value = np.cos(angle), np.sin(angle)
+    h_str = f"(x {'-' if center[0] >= 0 else '+'} {abs(center[0]):.4f})"
+    k_str = f"(y {'-' if center[1] >= 0 else '+'} {abs(center[1]):.4f})"
+    first = f"({h_str}*{cos_value:.4f}+{k_str}*{sin_value:.4f})"
+    second = f"(-{h_str}*{sin_value:.4f}+{k_str}*{cos_value:.4f})"
+    if kind == "ellipse":
+        equation = f"{first}^2/{a:.4f}^2 + {second}^2/{b:.4f}^2 = 1"
+    else:
+        equation = f"{first}^2/{a:.4f}^2 - {second}^2/{b:.4f}^2 = 1"
+    return {
+        "kind": kind,
+        "error": err,
+        "equation": equation,
+        "params": {
+            "h": float(center[0]), "k": float(center[1]),
+            "a": float(a), "b": float(b), "theta": theta,
+        },
+    }
 
 
 def guess_shape(x, y):
     """Look at a whole stroke and guess which canonical shape it best
     matches. Returns a dict: {kind, equation, error, params}.
 
-    `error` is a normalized residual -- lower is better -- but it is NOT
-    on a common scale across all candidate kinds (explicit y=f(x) fits vs.
-    algebraic conic residuals aren't directly comparable), so candidates
-    are ranked within comparable groups and a few simple preferences
-    (favor the simpler shape -- line over parabola over circle/ellipse)
-    break close ties, the same spirit as the per-piece fitter.
+    `error` is a normalized residual -- lower is better. Simpler shapes
+    (line, then parabola/circle) win close ties over general conics.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -218,7 +222,7 @@ def guess_shape(x, y):
 
     if len(x) >= 4:
         try:
-            candidates.append(_fit_axis_aligned_ellipse_or_hyperbola(x, y))
+            candidates.append(_fit_rotated_ellipse_or_hyperbola(x, y))
         except Exception:
             pass
 

@@ -1,22 +1,31 @@
-"""Interactive preview: pick how many pieces per stroke, see the fit update
-live, then confirm to export the Desmos equations.
+"""Interactive preview: start with automatic per-stroke fits, allow manual
+piece-count overrides, then confirm to export the Desmos equations.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 
-from .pieces import fit_stroke_pieces, evaluate_piece, group_pieces, group_to_desmos, to_desmos_animated, to_desmos_string
+from .pieces import fit_stroke_pieces, fit_stroke_auto, evaluate_piece, group_pieces, group_to_desmos, to_desmos_animated, to_desmos_string
 from .shapes import guess_shape
 
 KIND_COLORS = {"line": "tab:blue", "quadratic": "tab:green", "circle": "tab:red"}
 
 
 class Previewer:
-    def __init__(self, strokes, initial_pieces=6, max_pieces=40):
+    def __init__(self, strokes, initial_pieces=None, max_pieces=40):
         self.strokes = strokes
         self.max_pieces = max_pieces
-        self.num_pieces = initial_pieces
+        auto_results = [
+            fit_stroke_auto(x, y, max_pieces=max_pieces)
+            for x, y in strokes
+        ]
+        self.auto_piece_counts = [count for count, _fits in auto_results]
+        self.piece_counts = (
+            [max(1, min(initial_pieces, max_pieces))] * len(strokes)
+            if initial_pieces is not None else list(self.auto_piece_counts)
+        )
+        self.selected_stroke = 1
         self.confirmed = False
         self.final_fits = None
 
@@ -26,26 +35,41 @@ class Previewer:
             manager.set_window_title(
                 "Preview: drag the slider, then click Confirm & Export"
             )
-        plt.subplots_adjust(bottom=0.2)
+        plt.subplots_adjust(bottom=0.29)
 
-        slider_ax = self.fig.add_axes((0.2, 0.1, 0.6, 0.03))
+        self.stroke_slider = None
+        if len(strokes) > 1:
+            stroke_ax = self.fig.add_axes((0.2, 0.2, 0.6, 0.025))
+            self.stroke_slider = Slider(
+                stroke_ax, f"Stroke (1-{len(strokes)})", 1, len(strokes),
+                valinit=1, valstep=1,
+            )
+            self.stroke_slider.on_changed(self.on_stroke_change)
+        else:
+            self.fig.text(0.2, 0.2, "Stroke 1", ha="left", va="center")
+
+        slider_ax = self.fig.add_axes((0.2, 0.12, 0.6, 0.025))
         self.slider = Slider(
-            slider_ax, "Pieces per stroke", 1, max_pieces,
-            valinit=initial_pieces, valstep=1,
+            slider_ax, "Pieces for stroke 1", 1, max_pieces,
+            valinit=self.piece_counts[0], valstep=1,
         )
         self.slider.on_changed(self.on_slider_change)
 
-        button_ax = self.fig.add_axes((0.4, 0.02, 0.25, 0.05))
+        button_ax = self.fig.add_axes((0.4, 0.035, 0.25, 0.05))
         self.confirm_button = Button(button_ax, "Confirm & Export")
         self.confirm_button.on_clicked(self.on_confirm)
 
+        self._auto_fits = [fits for _count, fits in auto_results]
         self.redraw()
 
-    def _compute_fits(self, num_pieces):
+    def _compute_fits(self):
         fits = []
-        for x, y in self.strokes:
-            usable = max(1, min(num_pieces, len(x) // 3))
-            fits.append(fit_stroke_pieces(x, y, usable))
+        for i, ((x, y), count) in enumerate(zip(self.strokes, self.piece_counts)):
+            if count == self.auto_piece_counts[i]:
+                fits.append(self._auto_fits[i])
+            else:
+                usable = max(1, min(count, len(x) // 3))
+                fits.append(fit_stroke_pieces(x, y, usable))
         return fits
 
     def redraw(self):
@@ -53,7 +77,7 @@ class Previewer:
         for x, y in self.strokes:
             self.ax.plot(x, y, color="lightgray", linewidth=4, zorder=1)
 
-        fits = self._compute_fits(self.num_pieces)
+        fits = self._compute_fits()
         total_error = 0.0
         total_pieces = 0
         legend_kinds = set()
@@ -68,17 +92,26 @@ class Previewer:
                 total_pieces += 1
 
         avg_error = total_error / max(total_pieces, 1)
+        selected = self.selected_stroke - 1
+        count = self.piece_counts[selected]
+        automatic = self.auto_piece_counts[selected]
         self.ax.set_title(
             f"{total_pieces} pieces total  |  avg error: {avg_error:.4f}\n"
-            "blue=line  green=parabola  red=circular arc"
+            f"Stroke {self.selected_stroke}: {count} pieces (automatic: {automatic})  "
+            "|  blue=line  green=parabola  red=circular arc"
         )
+        self.slider.label.set_text(f"Pieces for stroke {self.selected_stroke}")
         self.ax.set_aspect("equal")
         self.ax.grid(True, linestyle="--", alpha=0.4)
         self.fig.canvas.draw_idle()
         self._last_fits = fits
 
+    def on_stroke_change(self, val):
+        self.selected_stroke = int(val)
+        self.slider.set_val(self.piece_counts[self.selected_stroke - 1])
+
     def on_slider_change(self, val):
-        self.num_pieces = int(val)
+        self.piece_counts[self.selected_stroke - 1] = int(val)
         self.redraw()
 
     def on_confirm(self, event):

@@ -246,6 +246,23 @@ def fit_stroke_pieces(x, y, num_pieces, points_per_piece=25):
     return [fit_piece(px, py) for px, py in pieces]
 
 
+def fit_stroke_auto(x, y, max_pieces=40, target_error=0.01, points_per_piece=25):
+    """Fit a stroke using the fewest pieces that meet a normalized error target."""
+    usable_max = max(1, min(int(max_pieces), max(1, len(x) // 3)))
+    best_fit = fit_stroke_pieces(x, y, 1, points_per_piece)
+    best_error = float(np.mean([piece["error"] for piece in best_fit]))
+    if best_error <= target_error:
+        return 1, best_fit
+
+    for count in range(2, usable_max + 1):
+        fitted = fit_stroke_pieces(x, y, count, points_per_piece)
+        error = float(np.mean([piece["error"] for piece in fitted]))
+        best_fit, best_error = fitted, error
+        if error <= target_error:
+            return count, fitted
+    return usable_max, best_fit
+
+
 def evaluate_piece(piece, n=40):
     """Sample points along a fitted piece for plotting."""
     lo, hi = piece.get("domain_dir", piece['domain'])

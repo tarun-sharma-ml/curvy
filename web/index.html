@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Curve Guesser — browser edition</title>
+  <style>
+    :root { color-scheme: light; font: 15px/1.45 system-ui, sans-serif; color: #172033; background: #f3f6fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0 auto; max-width: 1160px; padding: 22px; }
+    h1 { margin: 0 0 4px; font-size: 1.65rem; }
+    p { margin: 0 0 16px; color: #536176; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+    .panel { background: white; border: 1px solid #dce3ee; border-radius: 12px; padding: 14px; box-shadow: 0 2px 8px #1828480a; }
+    canvas { display: block; width: 100%; height: min(68vh, 650px); min-height: 400px; border: 1px solid #dce3ee; border-radius: 8px; touch-action: none; cursor: crosshair; }
+    .toolbar, .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .toolbar { margin-bottom: 10px; }
+    .tools { margin-bottom: 8px; }
+    button, select { font: inherit; border: 1px solid #c7d2e2; background: white; border-radius: 7px; padding: 7px 11px; color: inherit; }
+    button { cursor: pointer; }
+    button.primary { background: #2457d6; border-color: #2457d6; color: white; }
+    button.active { background: #dce8ff; border-color: #5781ef; }
+    button:disabled { opacity: .5; cursor: default; }
+    .controls { margin: 12px 0; }
+    .controls label { display: flex; align-items: center; gap: 8px; }
+    input[type=range] { width: min(220px, 40vw); }
+    #guesses { display: grid; gap: 8px; margin: 12px 0; }
+    .guess { border-left: 3px solid #5781ef; background: #f6f8fc; padding: 8px 10px; overflow-wrap: anywhere; }
+    .guess strong { text-transform: capitalize; }
+    textarea { width: 100%; min-height: 235px; resize: vertical; font: 12px/1.5 ui-monospace, Consolas, monospace; border: 1px solid #dce3ee; border-radius: 8px; padding: 10px; }
+    .hint { font-size: .88rem; color: #65748a; margin: 8px 0 0; }
+    @media (max-width: 780px) { body { padding: 12px; } .layout { grid-template-columns: 1fr; } canvas { height: 55vh; min-height: 320px; } }
+  </style>
+</head>
+<body>
+  <h1>Curve Guesser</h1>
+  <p>Draw a stroke, inspect its whole-shape guess, then tune the automatic piece count and export Desmos equations.</p>
+  <div class="layout">
+    <section class="panel">
+      <div class="toolbar">
+        <button id="undo" disabled>Undo</button>
+        <button id="redo" disabled>Redo</button>
+        <button id="clear">Clear</button>
+        <button id="snap" aria-pressed="false">Snap: off</button>
+        <button id="fit" class="primary">Fit drawing</button>
+      </div>
+      <div class="toolbar tools" role="toolbar" aria-label="Drawing tools">
+        <button data-tool="pen" aria-pressed="true">Pen (P)</button>
+        <button data-tool="line" aria-pressed="false">Line (L)</button>
+        <button data-tool="rect" aria-pressed="false">Rectangle (R)</button>
+        <button data-tool="circle" aria-pressed="false">Circle (O)</button>
+        <button data-tool="ellipse" aria-pressed="false">Ellipse (V)</button>
+        <button data-tool="polygon" aria-pressed="false">Polygon (G)</button>
+        <button data-tool="move" aria-pressed="false">Move (M)</button>
+        <button data-tool="erase" aria-pressed="false">Eraser (E)</button>
+      </div>
+      <p id="tool-hint" class="hint" aria-live="polite">Pen: drag to draw freehand.</p>
+      <canvas id="board" aria-label="Drawing grid"></canvas>
+      <div class="controls">
+        <label>Stroke <select id="stroke" aria-label="Select stroke" disabled></select></label>
+        <label>Pieces <input id="pieces" type="range" min="1" max="40" value="1" disabled><output id="piece-count">1</output></label>
+      </div>
+      <div id="guesses" aria-live="polite"></div>
+    </section>
+    <section class="panel">
+      <div class="toolbar">
+        <button id="export" class="primary" disabled>Download Desmos equations</button>
+      </div>
+      <textarea id="equations" aria-label="Generated Desmos equations" readonly placeholder="Draw a shape, then click Fit drawing."></textarea>
+      <p class="hint">Blue shows your strokes; green shows the fitted piecewise approximation. Shape guesses are optional canonical equations.</p>
+    </section>
+  </div>
+<script>
+(() => {
+  "use strict";
+  const canvas = document.querySelector("#board");
+  const ctx = canvas.getContext("2d");
+  const strokes = [];
+  const objectIds = [];
+  const autoCounts = [];
+  const pieceCounts = [];
+  const undoStack = [];
+  const redoStack = [];
+  const tools = ["pen", "line", "rect", "circle", "ellipse", "polygon", "move", "erase"];
+  const hints = {
+    pen:"Pen: drag to draw freehand.",
+    line:"Line: drag; hold Shift to lock to 15° angles.",
+    rect:"Rectangle: drag corner to corner; Shift makes a square, Alt draws from the centre.",
+    circle:"Circle: drag from the centre outwards.",
+    ellipse:"Ellipse: drag the bounding box; Shift makes a circle, Alt draws from the centre.",
+    polygon:"Polygon: click points; double-click or click the first point to close, right-click to finish open, Esc cancels.",
+    move:"Move: drag an object to move it; Delete removes the selected object.",
+    erase:"Eraser: drag over strokes to remove them."
+  };
+  let fits = [];
+  let drawing = null;
+  let fitted = false;
+  let activeTool = "pen";
+  let previousTool = "pen";
+  let snap = false;
+  let nextObjectId = 1;
+  let polygonPoints = [];
+  let polygonCursor = null;
+  let shapeDrag = null;
+  let moveDrag = null;
+  let selectedObjectId = null;
+  let eraserPosition = null;
+  const strokeSelect = document.querySelector("#stroke");
+  const pieceSlider = document.querySelector("#pieces");
+  const pieceOutput = document.querySelector("#piece-count");
+  const equationOutput = document.querySelector("#equations");
+  const exportButton = document.querySelector("#export");
+  const undoButton = document.querySelector("#undo");
+  const redoButton = document.querySelector("#redo");
+  const toolHint = document.querySelector("#tool-hint");
+
+  function copyStrokes(source=strokes) {
+    return source.map(points=>points.map(point=>[...point]));
+  }
+  function snapshot() {
+    return {strokes:copyStrokes(), objectIds:[...objectIds]};
+  }
+  function restore(state) {
+    strokes.splice(0,strokes.length,...copyStrokes(state.strokes));
+    objectIds.splice(0,objectIds.length,...state.objectIds);
+    selectedObjectId=null;
+  }
+  function updateHistoryButtons() {
+    undoButton.disabled=undoStack.length===0;
+    redoButton.disabled=redoStack.length===0;
+  }
+  function saveUndo(state=snapshot()) {
+    undoStack.push(state);
+    if(undoStack.length>100)undoStack.shift();
+    redoStack.length=0;
+    updateHistoryButtons();
+  }
+  function invalidateFit() {
+    fitted=false; fits=[]; autoCounts.length=0; pieceCounts.length=0;
+    exportButton.disabled=true;
+    document.querySelector("#guesses").replaceChildren();
+    equationOutput.value="";
+    strokeSelect.replaceChildren();
+    strokeSelect.disabled=true;
+    pieceSlider.disabled=true;
+  }
+  function addObject(newStrokes) {
+    if(!newStrokes.length)return;
+    saveUndo();
+    const objectId=nextObjectId++;
+    newStrokes.forEach(points=>{
+      if(points.length<2)return;
+      strokes.push(points.map(point=>[...point]));
+      objectIds.push(objectId);
+    });
+    invalidateFit();
+    render();
+  }
+  function setTool(tool) {
+    if(!tools.includes(tool))return;
+    if(tool==="erase") {
+      if(activeTool!=="erase")previousTool=activeTool;
+      else tool=previousTool;
+    }
+    polygonPoints=[]; shapeDrag=null; drawing=null; moveDrag=null;
+    activeTool=tool; selectedObjectId=null;
+    document.querySelectorAll("[data-tool]").forEach(button=>{
+      const active=button.dataset.tool===activeTool;
+      button.classList.toggle("active",active);
+      button.setAttribute("aria-pressed",String(active));
+    });
+    toolHint.textContent=hints[activeTool];
+    render();
+  }
+  function setSnap(value=!snap) {
+    snap=value;
+    const button=document.querySelector("#snap");
+    button.textContent=`Snap: ${snap?"on":"off"}`;
+    button.classList.toggle("active",snap);
+    button.setAttribute("aria-pressed",String(snap));
+  }
+  function point(event) {
+    const p=world(event);
+    return snap?p.map(value=>Math.floor(value+0.5)) : p;
+  }
+  function undo() {
+    if(!undoStack.length)return;
+    redoStack.push(snapshot());
+    restore(undoStack.pop());
+    invalidateFit(); updateHistoryButtons(); render();
+  }
+  function redo() {
+    if(!redoStack.length)return;
+    undoStack.push(snapshot());
+    restore(redoStack.pop());
+    invalidateFit(); updateHistoryButtons(); render();
+  }
+  function clearBoard() {
+    if(!strokes.length&&!polygonPoints.length)return;
+    saveUndo();
+    strokes.length=0; objectIds.length=0; polygonPoints=[];
+    selectedObjectId=null;
+    invalidateFit(); render();
+  }
+  function deleteSelected() {
+    if(selectedObjectId===null)return;
+    const before=snapshot();
+    for(let i=objectIds.length-1;i>=0;i--)if(objectIds[i]===selectedObjectId){
+      objectIds.splice(i,1); strokes.splice(i,1);
+    }
+    selectedObjectId=null;
+    saveUndo(before); invalidateFit(); render();
+  }
+
+  function view() {
+    const rect = canvas.getBoundingClientRect();
+    const scale = Math.min(rect.width, rect.height) / 20;
+    return { width: rect.width, height: rect.height, scale, ox: rect.width / 2, oy: rect.height / 2 };
+  }
+  function pixel(point, v) { return [v.ox + point[0] * v.scale, v.oy - point[1] * v.scale]; }
+  function world(event) {
+    const rect = canvas.getBoundingClientRect(), v = view();
+    return [(event.clientX - rect.left - v.ox) / v.scale, (v.oy - (event.clientY - rect.top)) / v.scale];
+  }
+  function resize() {
+    const rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    render();
+  }
+  function render() {
+    const v = view();
+    ctx.clearRect(0, 0, v.width, v.height);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, v.width, v.height);
+    ctx.strokeStyle = "#e7ebf2";
+    ctx.lineWidth = 1;
+    for (let x = -10; x <= 10; x++) {
+      const p = pixel([x, 0], v)[0]; ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, v.height); ctx.stroke();
+    }
+    for (let y = -10; y <= 10; y++) {
+      const p = pixel([0, y], v)[1]; ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(v.width, p); ctx.stroke();
+    }
+    ctx.strokeStyle = "#8390a4"; ctx.lineWidth = 1.5;
+    let p = pixel([0, 0], v);
+    ctx.beginPath(); ctx.moveTo(p[0], 0); ctx.lineTo(p[0], v.height); ctx.moveTo(0, p[1]); ctx.lineTo(v.width, p[1]); ctx.stroke();
+    strokes.forEach((stroke,index)=>{
+      const selected=objectIds[index]===selectedObjectId;
+      drawPath(stroke,selected?"#d64a24":"#4f6fbd",selected?3.5:2.5,v);
+    });
+    if(drawing)drawPath(drawing,"#2457d6",2.5,v);
+    if(shapeDrag?.preview)drawPath(shapeDrag.preview,"#d64a24",2,v,true);
+    if(polygonPoints.length)drawPath([...polygonPoints,...(polygonCursor?[polygonCursor]:[])],"#d64a24",2,v,true);
+    if(eraserPosition&&activeTool==="erase") {
+      const center=pixel(eraserPosition,v);
+      ctx.strokeStyle="#d64a24";ctx.lineWidth=1.5;ctx.beginPath();
+      ctx.arc(center[0],center[1],.6*v.scale,0,2*Math.PI);ctx.stroke();
+    }
+    const selected = Number(strokeSelect.value) - 1;
+    if (fitted && fits[selected]) {
+      fits[selected].forEach(piece => {
+        ctx.strokeStyle = "#15945a"; ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i <= 80; i++) {
+          const ratio = i / 80;
+          const axis = piece.orientation === "x" ? 0 : 1;
+          const t = piece.from[axis] + (piece.to[axis] - piece.from[axis]) * ratio;
+          const dependent = piece.predict(t);
+          const q = pixel(piece.orientation === "x" ? [t, dependent] : [dependent, t], v);
+          if (!i) ctx.moveTo(q[0], q[1]); else ctx.lineTo(q[0], q[1]);
+        }
+        ctx.stroke();
+      });
+    }
+  }
+  function drawPath(points, color, width, v, dashed=false) {
+    if (points.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.setLineDash(dashed?[6,5]:[]);
+    ctx.beginPath();
+    points.forEach((point, i) => { const p = pixel(point, v); if (!i) ctx.moveTo(...p); else ctx.lineTo(...p); });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  function solve(matrix, rhs) {
+    const a = matrix.map((row, i) => [...row, rhs[i]]);
+    const n = rhs.length;
+    for (let col = 0; col < n; col++) {
+      let pivot = col;
+      for (let row = col + 1; row < n; row++) if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
+      if (Math.abs(a[pivot][col]) < 1e-12) throw Error("Degenerate fit");
+      [a[col], a[pivot]] = [a[pivot], a[col]];
+      const d = a[col][col];
+      for (let j = col; j <= n; j++) a[col][j] /= d;
+      for (let row = 0; row < n; row++) if (row !== col) {
+        const factor = a[row][col];
+        for (let j = col; j <= n; j++) a[row][j] -= factor * a[col][j];
+      }
+    }
+    return a.map(row => row[n]);
+  }
+  function leastSquares(rows, values) {
+    const n = rows[0].length, gram = Array.from({length:n}, () => Array(n).fill(0)), rhs = Array(n).fill(0);
+    rows.forEach((row, i) => {
+      for (let a = 0; a < n; a++) { rhs[a] += row[a] * values[i]; for (let b = 0; b < n; b++) gram[a][b] += row[a] * row[b]; }
+    });
+    return solve(gram, rhs);
+  }
+  function rms(values) { return Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / Math.max(values.length, 1)); }
+  function guessShape(points) {
+    if (points.length < 5) return {kind:"unknown", error:1, equation:"Not enough points for a reliable shape guess."};
+    const xs = points.map(p=>p[0]), ys = points.map(p=>p[1]);
+    const mx = xs.reduce((a,b)=>a+b,0)/xs.length, my = ys.reduce((a,b)=>a+b,0)/ys.length;
+    const scale = Math.max(Math.max(...xs)-Math.min(...xs), Math.max(...ys)-Math.min(...ys), 1e-8);
+    const u = xs.map(x=>(x-mx)/scale), v = ys.map(y=>(y-my)/scale);
+    const rows = u.map((x,i)=>[x*x,x*v[i],v[i]*v[i],x,v[i]]);
+    let conic;
+    try {
+      const [A,B,C,D,E] = leastSquares(rows, rows.map(()=>1));
+      const disc = Math.hypot(A-C, B), lambda1 = (A+C-disc)/2, lambda2=(A+C+disc)/2;
+      const theta = .5*Math.atan2(B,A-C) + Math.PI/2;
+      const det=4*A*C-B*B;
+      if (Math.abs(det)<1e-10) throw Error("Degenerate conic");
+      const cx=(-2*C*D+B*E)/det, cy=(B*D-2*A*E)/det;
+      const f=A*cx*cx+B*cx*cy+C*cy*cy+D*cx+E*cy-1;
+      const axes=[-f/lambda1*scale*scale,-f/lambda2*scale*scale];
+      const ellipse=axes[0]>0&&axes[1]>0, hyperbola=axes[0]*axes[1]<0;
+      if (!ellipse&&!hyperbola) throw Error("Not an ellipse or hyperbola");
+      let angle=theta; const c=Math.cos(angle), s=Math.sin(angle);
+      let a,b,kind,sign;
+      if (ellipse && Math.max(...axes)/Math.min(...axes)<1.02) {
+        const radius=Math.sqrt((axes[0]+axes[1])/2);
+        const h=mx+scale*cx,k=my+scale*cy;
+        conic={kind:"circle",error:0,equation:`(x ${h>=0?"-":"+"} ${Math.abs(h).toFixed(4)})^2 + (y ${k>=0?"-":"+"} ${Math.abs(k).toFixed(4)})^2 = ${radius.toFixed(4)}^2`};
+        return conic;
+      }
+      if (ellipse) { a=Math.sqrt(axes[0]); b=Math.sqrt(axes[1]); kind="ellipse"; sign="+"; }
+      else {
+        const major=axes[0]>0?0:1;
+        a=Math.sqrt(axes[major]); b=Math.sqrt(Math.abs(axes[1-major]));
+        kind="hyperbola"; sign="-";
+        if (major===1) angle+=Math.PI/2;
+      }
+      const h=mx+scale*cx,k=my+scale*cy;
+      const termCos=Math.cos(angle),termSin=Math.sin(angle);
+      const xCenter=`x${h>=0?"-":"+"}${Math.abs(h).toFixed(4)}`, yCenter=`y${k>=0?"-":"+"}${Math.abs(k).toFixed(4)}`;
+      const term1=`((${xCenter})*${termCos.toFixed(4)}+(${yCenter})*${termSin.toFixed(4)})`;
+      const term2=`(-(${xCenter})*${termSin.toFixed(4)}+(${yCenter})*${termCos.toFixed(4)})`;
+      const residual=rows.map((r,i)=>r[0]*A+r[1]*B+r[2]*C+r[3]*D+r[4]*E-1);
+      conic={kind,error:rms(residual),equation:`${term1}^2/${a.toFixed(4)}^2 ${sign} ${term2}^2/${b.toFixed(4)}^2 = 1`,params:{h,k,a,b,theta:angle}};
+    } catch (_) { conic=null; }
+    const orientation = (Math.max(...xs)-Math.min(...xs)) >= (Math.max(...ys)-Math.min(...ys)) ? "x" : "y";
+    const indep=orientation==="x"?xs:ys, dep=orientation==="x"?ys:xs;
+    let parabola;
+    try {
+      const mean=indep.reduce((a,b)=>a+b,0)/indep.length, range=Math.max(...indep)-Math.min(...indep);
+      const z=indep.map(q=>(q-mean)/Math.max(range,1e-9));
+      const [a,b,c]=leastSquares(z.map(q=>[q*q,q,1]),dep);
+      const errors=dep.map((q,i)=>q-(a*z[i]*z[i]+b*z[i]+c));
+      const vertex=mean-b/(2*a)*range, offset=c-b*b/(4*a);
+      const expr=orientation==="x"?`y = ${a.toFixed(4)}((x-${vertex.toFixed(4)})/${range.toFixed(4)})^2 ${offset>=0?"+":"-"} ${Math.abs(offset).toFixed(4)}`:`x = ${a.toFixed(4)}((y-${vertex.toFixed(4)})/${range.toFixed(4)})^2 ${offset>=0?"+":"-"} ${Math.abs(offset).toFixed(4)}`;
+      const slope=b/range,intercept=c-slope*mean;
+      parabola=Math.abs(a)<1e-7?{kind:"line",error:rms(errors)/scale,equation:orientation==="x"?`y = ${slope.toFixed(4)}x ${intercept>=0?"+":"-"} ${Math.abs(intercept).toFixed(4)}`:`x = ${slope.toFixed(4)}y ${intercept>=0?"+":"-"} ${Math.abs(intercept).toFixed(4)}`}:{kind:"parabola",error:rms(errors)/scale,equation:expr};
+    } catch (_) { parabola=null; }
+    const candidates=[conic,parabola].filter(Boolean).sort((a,b)=>a.error-b.error);
+    if (!candidates.length) return {kind:"unknown",error:1,equation:"No stable simple-shape fit found."};
+    return candidates[0];
+  }
+  function resample(points, count) {
+    const lengths=[0];
+    for(let i=1;i<points.length;i++) lengths.push(lengths[i-1]+Math.hypot(points[i][0]-points[i-1][0],points[i][1]-points[i-1][1]));
+    const total=lengths[lengths.length-1];
+    return Array.from({length:count},(_,i)=>{
+      const target=total*i/(count-1); let j=1;
+      while(j<lengths.length-1&&lengths[j]<target) j++;
+      const part=(target-lengths[j-1])/Math.max(lengths[j]-lengths[j-1],1e-12);
+      return [points[j-1][0]+part*(points[j][0]-points[j-1][0]),points[j-1][1]+part*(points[j][1]-points[j-1][1])];
+    });
+  }
+  function fitPiece(points) {
+    const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);
+    const orientation=(Math.max(...xs)-Math.min(...xs)) >= (Math.max(...ys)-Math.min(...ys))?"x":"y";
+    const indep=orientation==="x"?xs:ys,dep=orientation==="x"?ys:xs;
+    const center=(Math.min(...indep)+Math.max(...indep))/2, scale=Math.max(Math.max(...indep)-Math.min(...indep),1e-9);
+    const z=indep.map(v=>(v-center)/scale), line=leastSquares(z.map(v=>[v,1]),dep);
+    const quad=leastSquares(z.map(v=>[v*v,v,1]),dep);
+    const lineError=rms(dep.map((v,i)=>v-(line[0]*z[i]+line[1])));
+    const quadError=rms(dep.map((v,i)=>v-(quad[0]*z[i]*z[i]+quad[1]*z[i]+quad[2])));
+    const from=points[0],to=points[points.length-1];
+    const span=Math.max(Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys),1e-9);
+    let circle=null;
+    try {
+      const [D,E,F]=leastSquares(xs.map((x,i)=>[x,ys[i],1]),xs.map((x,i)=>-(x*x+ys[i]*ys[i])));
+      const h=-D/2,k=-E/2,r=Math.sqrt(h*h+k*k-F);
+      if(!Number.isFinite(r)||r<=0)throw Error("Degenerate circle");
+      const sign=dep.reduce((sum,value)=>sum+value-(orientation==="x"?k:h),0)>=0?1:-1;
+      const predictCircle=(t,shift=0)=>{
+        const inside=Math.max(0,r*r-(t-(orientation==="x"?h:k))**2);
+        return (orientation==="x"?k:h)+shift+sign*Math.sqrt(inside);
+      };
+      const error=rms(indep.map((t,i)=>dep[i]-predictCircle(t)))/span;
+      circle={h,k,r,sign,predictCircle,error};
+    } catch (_) {}
+
+    const useCircle=circle&&circle.error+1e-7<Math.min(lineError,quadError)/span*.85;
+    const degree=quadError+scale*1e-7<lineError?2:1;
+    let coeff=(degree===2?quad:line).slice(),circleShift=0;
+    let predict=useCircle?t=>circle.predictCircle(t,circleShift):t=>{
+      const q=(t-center)/scale;
+      return degree===2?coeff[0]*q*q+coeff[1]*q+coeff[2]:coeff[0]*q+coeff[1];
+    };
+    const t0=from[orientation==="x"?0:1],t1=to[orientation==="x"?0:1];
+    if(useCircle) {
+      circleShift=.5*((dep[0]-predict(t0))+(dep[dep.length-1]-predict(t1)));
+    } else {
+      const z0=(t0-center)/scale,z1=(t1-center)/scale;
+      const d0=dep[0]-predict(t0),d1=dep[dep.length-1]-predict(t1);
+      const correction=(d1-d0)/(z1-z0);
+      if(degree===2){coeff[1]+=correction;coeff[2]+=d0-correction*z0;}
+      else{coeff[0]+=correction;coeff[1]+=d0-correction*z0;}
+    }
+    const error=rms(indep.map((t,i)=>dep[i]-predict(t)))/span;
+    return {orientation,center,scale,degree,coeff,from,to,error,predict,circle:useCircle?{...circle,shift:circleShift}:null};
+  }
+  function fitStroke(points,count) {
+    const data=resample(points,count*25+1), result=[];
+    for(let i=0;i<count;i++) result.push(fitPiece(data.slice(i*25,i*25+26)));
+    return result;
+  }
+  function autoCount(points) {
+    const max=Math.min(40,Math.max(1,Math.floor(points.length/3)));
+    for(let count=1;count<=max;count++) {
+      const fitted=fitStroke(points,count), error=fitted.reduce((sum,p)=>sum+p.error,0)/fitted.length;
+      if(error<=.01||count===max) return [count,fitted];
+    }
+    return [max,fitStroke(points,max)];
+  }
+  function updateGuessPanel() {
+    const panel=document.querySelector("#guesses"); panel.replaceChildren();
+    strokes.forEach((stroke,i)=>{
+      const guess=guessShape(stroke), card=document.createElement("div"); card.className="guess";
+      const title=document.createElement("strong"); title.textContent=`Stroke ${i+1}: ${guess.kind}`;
+      const equation=document.createElement("div"); equation.textContent=guess.equation;
+      const detail=document.createElement("small"); detail.textContent=`Automatic pieces: ${autoCounts[i]} · fit error: ${guess.error.toFixed(4)}`;
+      card.append(title,equation,detail); panel.append(card);
+    });
+  }
+  function setFit() {
+    if(activeTool==="polygon"&&polygonPoints.length>=2)finishPolygon(false);
+    if (!strokes.length) return;
+    fits=[]; autoCounts.length=0;
+    strokes.forEach(stroke=>{const [count,result]=autoCount(stroke);autoCounts.push(count);fits.push(result);});
+    strokeSelect.replaceChildren(...strokes.map((_,i)=>new Option(`Stroke ${i+1}`,String(i+1))));
+    strokeSelect.disabled=strokes.length<2;
+    pieceCounts.splice(0,pieceCounts.length,...autoCounts);
+    pieceSlider.value=pieceCounts[0]; pieceOutput.value=pieceCounts[0];
+    pieceSlider.disabled=false;
+    fitted=true; exportButton.disabled=false;
+    updateGuessPanel(); writeEquations(); render();
+  }
+  function onSelection() {
+    const index=Number(strokeSelect.value)-1;
+    pieceSlider.value=pieceCounts[index]||1; pieceOutput.value=pieceSlider.value;
+    render();
+  }
+  function quote(value) { return Number(value).toFixed(4); }
+  function writeEquations() {
+    const lines=["DESMOS EQUATIONS","Optional whole-stroke guesses:"];
+    strokes.forEach((stroke,i)=>{const g=guessShape(stroke);lines.push(`# Stroke ${i+1}: ${g.kind}`,g.equation);});
+    lines.push("Piecewise reconstruction (paste each restricted expression separately):");
+    fits.forEach((pieces,i)=>pieces.forEach((p,j)=>{
+      const variable=p.orientation==="x"?"x":"y",output=p.orientation==="x"?"y":"x";
+      const centerTerm=`${variable} ${p.center>=0?"-":"+"} ${quote(Math.abs(p.center))}`;
+      const z=`((${centerTerm})/${quote(p.scale)})`;
+      const c=p.coeff;
+      let rhs;
+      if(p.circle) {
+        const axisCenter=p.orientation==="x"?p.circle.h:p.circle.k;
+        const otherCenter=(p.orientation==="x"?p.circle.k:p.circle.h)+p.circle.shift;
+        const centerExpression=`${variable} ${axisCenter>=0?"-":"+"} ${quote(Math.abs(axisCenter))}`;
+        rhs=`${quote(otherCenter)}${p.circle.sign>=0?"+":"-"}\\sqrt{${quote(p.circle.r)}^2-(${centerExpression})^2}`;
+      } else if(p.degree===2) {
+        rhs=`${quote(c[0])}${z}^2${c[1]>=0?"+":"-"}${quote(Math.abs(c[1]))}${z}${c[2]>=0?"+":"-"}${quote(Math.abs(c[2]))}`;
+      } else {
+        rhs=`${quote(c[0])}${z}${c[1]>=0?"+":"-"}${quote(Math.abs(c[1]))}`;
+      }
+      const lo=Math.min(p.from[p.orientation==="x"?0:1],p.to[p.orientation==="x"?0:1]);
+      const hi=Math.max(p.from[p.orientation==="x"?0:1],p.to[p.orientation==="x"?0:1]);
+      lines.push(`${output}=${rhs}\\left\\{${quote(lo)}\\le ${variable}\\le${quote(hi)}\\right\\}`);
+    }));
+    equationOutput.value=lines.join("\n");
+  }
+  function lineStroke(from,to,count=40) {
+    return Array.from({length:count},(_,i)=>{
+      const t=i/(count-1);
+      return [from[0]+(to[0]-from[0])*t,from[1]+(to[1]-from[1])*t];
+    });
+  }
+  function constrainAngle(from,to) {
+    const dx=to[0]-from[0],dy=to[1]-from[1],length=Math.hypot(dx,dy);
+    if(!length)return to;
+    const step=Math.PI/12,angle=Math.round(Math.atan2(dy,dx)/step)*step;
+    return [from[0]+length*Math.cos(angle),from[1]+length*Math.sin(angle)];
+  }
+  function boxFromDrag(from,to,square=false,fromCenter=false) {
+    let dx=to[0]-from[0],dy=to[1]-from[1];
+    if(square) {
+      const side=Math.max(Math.abs(dx),Math.abs(dy));
+      dx=Math.sign(dx)*side;dy=Math.sign(dy)*side;
+    }
+    const x1=fromCenter?from[0]-dx:from[0],x2=fromCenter?from[0]+dx:from[0]+dx;
+    const y1=fromCenter?from[1]-dy:from[1],y2=fromCenter?from[1]+dy:from[1]+dy;
+    return [Math.min(x1,x2),Math.min(y1,y2),Math.max(x1,x2),Math.max(y1,y2)];
+  }
+  function buildShape(tool,from,to,event) {
+    if(Math.hypot(to[0]-from[0],to[1]-from[1])<1e-6)return null;
+    const shift=event.shiftKey,alt=event.altKey;
+    if(tool==="line")return [lineStroke(from,shift?constrainAngle(from,to):to)];
+    if(tool==="circle") {
+      const radius=Math.hypot(to[0]-from[0],to[1]-from[1]);
+      return [ellipsePoints(from[0],from[1],radius,radius)];
+    }
+    if(tool==="rect"||tool==="ellipse") {
+      const [xmin,ymin,xmax,ymax]=boxFromDrag(from,to,shift,alt);
+      if(xmax-xmin<1e-6||ymax-ymin<1e-6)return null;
+      if(tool==="rect")return [
+        lineStroke([xmin,ymin],[xmax,ymin],30),
+        lineStroke([xmax,ymin],[xmax,ymax],30),
+        lineStroke([xmax,ymax],[xmin,ymax],30),
+        lineStroke([xmin,ymax],[xmin,ymin],30)
+      ];
+      return [ellipsePoints((xmin+xmax)/2,(ymin+ymax)/2,(xmax-xmin)/2,(ymax-ymin)/2)];
+    }
+    return null;
+  }
+  function ellipsePoints(cx,cy,rx,ry) {
+    return Array.from({length:181},(_,i)=>{
+      const angle=2*Math.PI*i/180;
+      return [cx+rx*Math.cos(angle),cy+ry*Math.sin(angle)];
+    });
+  }
+  function finishPolygon(closed) {
+    const points=polygonPoints;
+    if((closed&&points.length<3)||(!closed&&points.length<2))return;
+    const sides=[];
+    for(let i=1;i<points.length;i++)sides.push(lineStroke(points[i-1],points[i],30));
+    if(closed)sides.push(lineStroke(points[points.length-1],points[0],30));
+    polygonPoints=[];polygonCursor=null;
+    addObject(sides);
+  }
+  function squaredDistanceToSegment(p,a,b) {
+    const dx=b[0]-a[0],dy=b[1]-a[1],length=dx*dx+dy*dy;
+    const t=length?Math.max(0,Math.min(1,((p[0]-a[0])*dx+(p[1]-a[1])*dy)/length)):0;
+    return Math.hypot(p[0]-(a[0]+t*dx),p[1]-(a[1]+t*dy));
+  }
+  function strokeDistance(p,points) {
+    let distance=Infinity;
+    for(let i=1;i<points.length;i++)distance=Math.min(distance,squaredDistanceToSegment(p,points[i-1],points[i]));
+    return distance;
+  }
+  function beginMove(p) {
+    let best={id:null,distance:Infinity};
+    strokes.forEach((stroke,index)=>{
+      const distance=strokeDistance(p,stroke);
+      if(distance<best.distance)best={id:objectIds[index],distance};
+    });
+    selectedObjectId=best.distance<=.6?best.id:null;
+    moveDrag=selectedObjectId===null?null:{before:snapshot(),origin:p,last:[0,0],moved:false};
+    render();
+  }
+  function moveObject(p) {
+    if(!moveDrag)return;
+    let dx=p[0]-moveDrag.origin[0],dy=p[1]-moveDrag.origin[1];
+    if(snap){dx=Math.floor(dx+.5);dy=Math.floor(dy+.5);}
+    const sx=dx-moveDrag.last[0],sy=dy-moveDrag.last[1];
+    if(!sx&&!sy)return;
+    strokes.forEach((stroke,index)=>{
+      if(objectIds[index]===selectedObjectId)strokes[index]=stroke.map(([x,y])=>[x+sx,y+sy]);
+    });
+    moveDrag.last=[dx,dy];moveDrag.moved=true;
+    render();
+  }
+  function eraseAt(p) {
+    let changed=false;
+    for(let i=strokes.length-1;i>=0;i--) {
+      const remaining=[],chunks=[];
+      let strokeChanged=false;
+      for(const point of strokes[i]) {
+        if(Math.hypot(point[0]-p[0],point[1]-p[1])<=.6) {
+          changed=true;strokeChanged=true;
+          if(remaining.length>=2)chunks.push([...remaining]);
+          remaining.length=0;
+        } else remaining.push(point);
+      }
+      if(remaining.length>=2)chunks.push([...remaining]);
+      if(strokeChanged) {
+        if(!chunks.length){strokes.splice(i,1);objectIds.splice(i,1);}
+        else {
+          const id=objectIds[i];
+          strokes.splice(i,1,...chunks);objectIds.splice(i,1,...chunks.map(()=>id));
+        }
+      }
+    }
+    return changed;
+  }
+  let eraseDrag=null;
+  canvas.addEventListener("contextmenu",event=>event.preventDefault());
+  canvas.addEventListener("pointerdown",event=>{
+    if(event.button===2&&activeTool==="polygon") {
+      event.preventDefault();finishPolygon(false);render();return;
+    }
+    if(event.button!==0)return;
+    canvas.setPointerCapture(event.pointerId);
+    const raw=world(event),p=point(event);
+    if(activeTool==="pen")drawing=[raw];
+    else if(activeTool==="line"||activeTool==="rect"||activeTool==="circle"||activeTool==="ellipse")shapeDrag={from:p,preview:null};
+    else if(activeTool==="polygon") {
+      if(event.detail>1&&polygonPoints.length>=3)finishPolygon(true);
+      else if(polygonPoints.length>=3&&Math.hypot(p[0]-polygonPoints[0][0],p[1]-polygonPoints[0][1])<.6)finishPolygon(true);
+      else if(!polygonPoints.length||Math.hypot(p[0]-polygonPoints[polygonPoints.length-1][0],p[1]-polygonPoints[polygonPoints.length-1][1])>1e-9)polygonPoints.push(p);
+    } else if(activeTool==="move")beginMove(world(event));
+    else if(activeTool==="erase") {
+      eraseDrag={before:snapshot(),changed:false};
+      eraserPosition=world(event);
+      eraseDrag.changed=eraseAt(eraserPosition);
+    }
+    render();
+  });
+  canvas.addEventListener("pointermove",event=>{
+    const raw=world(event),p=activeTool==="pen"||activeTool==="erase"||activeTool==="move"?raw:point(event);
+    if(drawing) {
+      const last=drawing[drawing.length-1];
+      if(Math.hypot(p[0]-last[0],p[1]-last[1])>.025)drawing.push(p);
+    } else if(shapeDrag) {
+      shapeDrag.preview=(buildShape(activeTool,shapeDrag.from,p,event)||[]).flat();
+    } else if(activeTool==="polygon"&&polygonPoints.length)polygonCursor=p;
+    else if(activeTool==="move")moveObject(world(event));
+    else if(activeTool==="erase") {
+      eraserPosition=world(event);
+      if(eraseDrag)eraseDrag.changed=eraseAt(eraserPosition)||eraseDrag.changed;
+    }
+    render();
+  });
+  function endPointer(event) {
+    if(drawing) {
+      if(drawing.length===1)drawing.push([...drawing[0]]);
+      const stroke=drawing; drawing=null; addObject([stroke]);
+    } else if(shapeDrag) {
+      const drag=shapeDrag;shapeDrag=null;
+      const shape=buildShape(activeTool,drag.from,point(event),event);
+      if(shape)addObject(shape);else render();
+    } else if(activeTool==="move"&&moveDrag) {
+      if(moveDrag.moved){saveUndo(moveDrag.before);invalidateFit();}
+      moveDrag=null;render();
+    } else if(activeTool==="erase"&&eraseDrag) {
+      if(eraseDrag.changed){saveUndo(eraseDrag.before);invalidateFit();}
+      eraseDrag=null;render();
+    }
+  }
+  canvas.addEventListener("pointerup",endPointer);
+  canvas.addEventListener("pointercancel",endPointer);
+  canvas.addEventListener("dblclick",event=>{
+    if(activeTool==="polygon"){event.preventDefault();finishPolygon(true);render();}
+  });
+  document.querySelector("#fit").addEventListener("click",setFit);
+  undoButton.addEventListener("click",undo);
+  redoButton.addEventListener("click",redo);
+  document.querySelector("#clear").addEventListener("click",clearBoard);
+  document.querySelector("#snap").addEventListener("click",()=>setSnap());
+  document.querySelectorAll("[data-tool]").forEach(button=>button.addEventListener("click",()=>setTool(button.dataset.tool)));
+  window.addEventListener("keydown",event=>{
+    if(event.target.matches("input, textarea, select"))return;
+    const key=event.key.toLowerCase();
+    if((event.ctrlKey||event.metaKey)&&key==="z") {
+      event.preventDefault();event.shiftKey?redo():undo();return;
+    }
+    if((event.ctrlKey||event.metaKey)&&key==="y"){event.preventDefault();redo();return;}
+    if(event.key==="Delete"){deleteSelected();return;}
+    if(key==="escape") {
+      polygonPoints=[];polygonCursor=null;shapeDrag=null;drawing=null;moveDrag=null;selectedObjectId=null;render();return;
+    }
+    if(key==="enter"){event.preventDefault();setFit();return;}
+    if(key==="c"){clearBoard();return;}
+    if(key==="u"){undo();return;}
+    if(key==="s"){setSnap();return;}
+    if(key==="e"){setTool("erase");return;}
+    const shortcuts={p:"pen",l:"line",r:"rect",o:"circle",v:"ellipse",g:"polygon",m:"move"};
+    if(shortcuts[key])setTool(shortcuts[key]);
+  });
+  strokeSelect.addEventListener("change",onSelection);
+  pieceSlider.addEventListener("input",()=>{
+    if(!fitted)return;
+    const i=Number(strokeSelect.value)-1,count=Number(pieceSlider.value);
+    pieceCounts[i]=count; pieceOutput.value=count; fits[i]=fitStroke(strokes[i],count);
+    updateGuessPanel();writeEquations();render();
+  });
+  exportButton.addEventListener("click",()=>{
+    const blob=new Blob([equationOutput.value],{type:"text/plain;charset=utf-8"}),url=URL.createObjectURL(blob);
+    const link=document.createElement("a");link.href=url;link.download="desmos_equations.txt";document.body.append(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+  new ResizeObserver(resize).observe(canvas);
+  resize();
+})();
+</script>
+</body>
+</html>

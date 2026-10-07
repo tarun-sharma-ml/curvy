@@ -57,6 +57,24 @@ def test_ellipse_is_identified():
     assert abs(g["params"]["b"] - 1.5) < 1e-3
 
 
+def test_rotated_ellipse_is_identified_and_recovers_rotation():
+    theta = np.linspace(0, 2 * np.pi, 240)
+    angle = np.deg2rad(31)
+    x = 2 + 4 * np.cos(theta) * np.cos(angle) - 1.5 * np.sin(theta) * np.sin(angle)
+    y = -3 + 4 * np.cos(theta) * np.sin(angle) + 1.5 * np.sin(theta) * np.cos(angle)
+
+    guess = guess_shape(x, y)
+
+    assert guess["kind"] == "ellipse"
+    assert guess["error"] < 1e-6
+    assert abs(guess["params"]["h"] - 2) < 1e-3
+    assert abs(guess["params"]["k"] + 3) < 1e-3
+    assert abs(guess["params"]["a"] - 4) < 1e-3
+    assert abs(guess["params"]["b"] - 1.5) < 1e-3
+    assert abs(np.sin(guess["params"]["theta"] - angle)) < 1e-3
+    assert "*" in guess["equation"]
+
+
 def test_hyperbola_is_identified_not_parabola():
     # Regression test: one branch of a hyperbola is locally similar to a
     # parabola, so the selection logic must actually compare the two
@@ -67,6 +85,23 @@ def test_hyperbola_is_identified_not_parabola():
     g = guess_shape(x, y)
     assert g["kind"] == "hyperbola"
     assert g["error"] < 1e-6
+
+
+def test_rotated_hyperbola_is_identified():
+    t = np.linspace(-1.2, 1.2, 140)
+    angle = np.deg2rad(27)
+    local_x = 1.5 * np.cosh(t)
+    local_y = 0.8 * np.sinh(t)
+    x = -2 + local_x * np.cos(angle) - local_y * np.sin(angle)
+    y = 3 + local_x * np.sin(angle) + local_y * np.cos(angle)
+
+    guess = guess_shape(x, y)
+
+    assert guess["kind"] == "hyperbola"
+    assert guess["error"] < 1e-6
+    assert abs(guess["params"]["h"] + 2) < 1e-3
+    assert abs(guess["params"]["k"] - 3) < 1e-3
+    assert abs(np.sin(guess["params"]["theta"] - angle)) < 1e-3
 
 
 def test_noisy_circle_still_identified_with_higher_error():

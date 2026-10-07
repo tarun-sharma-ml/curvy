@@ -5,6 +5,7 @@ from curve_guesser.pieces import (
     split_stroke,
     fit_piece,
     fit_stroke_pieces,
+    fit_stroke_auto,
     evaluate_piece,
     to_desmos_string,
     group_pieces,
@@ -75,6 +76,17 @@ def test_fit_stroke_pieces_covers_whole_stroke():
     assert len(pieces) == 6
     for p in pieces:
         assert p["error"] < 0.5  # loose sanity bound
+
+
+def test_fit_stroke_auto_uses_one_piece_for_line_and_more_for_curve():
+    x = np.linspace(0, 10, 300)
+    line_count, line_pieces = fit_stroke_auto(x, 2 * x + 1)
+    curve_count, curve_pieces = fit_stroke_auto(x, np.sin(x * 2))
+
+    assert line_count == len(line_pieces) == 1
+    assert curve_count == len(curve_pieces)
+    assert curve_count > 1
+    assert np.mean([piece["error"] for piece in curve_pieces]) <= 0.01
 
 
 def test_evaluate_piece_matches_domain():

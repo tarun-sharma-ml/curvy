@@ -22,9 +22,9 @@ interactive board. Curve Guesser gives you two things back:
 4. The console immediately prints a **shape guess** for each stroke —
    which canonical curve it resembles and that curve's equation, tagged
    with a confidence level (excellent / good / rough / poor match).
-5. A **live preview** window opens with a "Pieces per stroke" slider.
-   Drag it to trade off detail vs. equation count, color-coded by which
-   function type won each piece (blue=line, green=parabola, red=arc).
+5. A **live preview** window opens with a per-stroke automatic piece count.
+   Select a stroke and adjust its piece-count slider to trade off detail
+   vs. equation count.
 6. Click **Confirm & Export**. Whole-stroke canonical guesses and the
    final piecewise equations print to the console and save to
    `desmos_equations.txt`, including a second, animated "pen drawing"
@@ -56,6 +56,15 @@ or, if installed as a package:
 curve-guesser
 ```
 
+### Browser version (no installation)
+
+Open [`web/index.html`](./web/index.html) directly in a modern browser.
+Draw one or more strokes, click **Fit drawing**, select a stroke to adjust
+its piece count, then download the Desmos expressions. The browser version
+is self-contained and does not need a server, package install, or network
+connection. It exports static equations; animated reveal exports are
+available through the Python application.
+
 **Drawing tools** (left-hand palette, or press the key):
 
 | Tool | Key | How it works |
@@ -80,14 +89,15 @@ the fitting and Desmos export. Rectangles and polygons are added one stroke
 per side so each side fits as an exact straight line.
 
 **In the preview window:**
-- Drag **Pieces per stroke** to trade off detail vs. equation count
+- Each stroke starts with the fewest pieces that reach the automatic fit
+  error target; use the stroke selector and slider to override that count
 - Click **Confirm & Export** when happy with it
 
 ## Shape guessing
 
-Each stroke is checked as a *whole* against five canonical curves — a
-line, a circle, a parabola (either orientation), an axis-aligned
-ellipse, and an axis-aligned hyperbola — and whichever fits best (with a
+Each stroke is checked as a *whole* against canonical curves — a
+line, a circle, a parabola (either orientation), a rotated ellipse, and a
+rotated hyperbola — and whichever fits best (with a
 preference for the simplest shape on close calls) is reported with its
 general equation and a confidence label:
 
@@ -129,6 +139,8 @@ curve-guesser/
 │   ├── pieces.py       # split a stroke into pieces, fit line/parabola/arc
 │   ├── preview.py      # live slider preview + Desmos export (static + animated)
 │   └── cli.py            # entry point
+├── web/
+│   └── index.html        # self-contained browser version
 ├── tests/
 │   ├── test_board.py
 │   ├── test_board_tools.py
@@ -151,6 +163,8 @@ pytest
 ## Notes & limitations
 
 - The piecewise fitter: more pieces = tighter match but more equations.
+  It automatically chooses a count per stroke using a normalized error
+  target; the preview lets you override each stroke independently.
   Adjacent pieces are forced to share exact endpoints (no gaps), with an
   exact solve for line/quadratic pieces and an averaged-translation
   correction for circular arcs.
@@ -158,16 +172,9 @@ pytest
   with the shared slider; vertical (x=f(y)) strokes are gated to appear
   once the slider passes their x-position, so the canvas still starts
   blank overall.
-- The shape guesser's ellipse/hyperbola fits are axis-aligned only (no
-  rotation term) — a tilted ellipse will be reported as whichever
-  axis-aligned shape fits best, which may be a rough match.
-
-## Contributing
-
-Ideas for future improvement:
-- Rotated (non-axis-aligned) ellipse/hyperbola fitting
-- Auto-picking a good piece count per stroke instead of one global slider
-- A browser-based (HTML/JS canvas) version for zero-install use
+- Conic fits support rotation, but the browser edition uses a lightweight
+  algebraic fit and can be less stable on very short, noisy, or partial
+  strokes than the Python fitter.
 
 ## License
 
